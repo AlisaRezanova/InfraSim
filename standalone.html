@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>InfraSim — аналог</title>
+<style>
+  :root { --bg:#0f141b; --panel:#182029; --line:#2a3644; --text:#e6ebf2; --dim:#8b97a8; --acc:#4da3ff; --ok:#4cd07d; --warn:#f0b83a; --bad:#ff5d5d; }
+  * { box-sizing:border-box; user-select:none; -webkit-user-select:none; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text); font:14px system-ui,Segoe UI,sans-serif; overflow:hidden; }
+  #hud { position:fixed; top:0; left:0; right:0; min-height:48px; background:var(--panel); border-bottom:1px solid var(--line);
+         display:flex; align-items:center; gap:14px; padding:6px 12px; z-index:2; flex-wrap:wrap; }
+  #hud .m { display:flex; flex-direction:column; line-height:1.15; }
+  #hud .m small { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+  #hud .m b { font-size:15px; font-variant-numeric:tabular-nums; }
+  #title { font-weight:600; }
+  .bad { color:var(--bad); } .good { color:var(--ok); } .warn { color:var(--warn); }
+  button { font:inherit; color:var(--text); background:#253140; border:1px solid var(--line); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#04121f; border-color:var(--acc); font-weight:600; }
+  button.sel { border-color:var(--acc); background:#22354d; }
+  button:disabled { opacity:.4; cursor:default; }
+  #pal { position:fixed; bottom:0; left:0; right:0; height:64px; background:var(--panel); border-top:1px solid var(--line);
+         display:flex; gap:6px; padding:6px 8px; z-index:2; overflow-x:auto; align-items:center; }
+  #pal button { flex:0 0 auto; text-align:center; line-height:1.2; padding:4px 10px; }
+  #pal button small { display:block; color:var(--dim); font-size:11px; }
+  canvas { position:fixed; left:0; touch-action:none; }
+  #insp { position:fixed; right:10px; top:70px; width:250px; background:#111a24ee; border:1px solid var(--line); border-radius:10px; padding:12px; z-index:3; display:none; }
+  #insp h3 { margin:0 0 4px; } #insp p { margin:4px 0 8px; color:var(--dim); font-size:12.5px; line-height:1.4; }
+  #insp .row { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  #goals { position:fixed; left:10px; top:70px; max-width:300px; background:#111a24cc; border:1px solid var(--line); border-radius:10px; padding:8px 12px; z-index:1; font-size:12.5px; line-height:1.5; pointer-events:none; }
+  #ov { position:fixed; inset:0; background:#0009; z-index:10; display:none; align-items:center; justify-content:center; padding:12px; }
+  #ov .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px 20px; max-width:560px; width:100%; max-height:92vh; overflow:auto; }
+  #ov h2 { margin:0 0 6px; } #ov p { color:var(--dim); line-height:1.5; }
+  .lv { display:flex; align-items:center; gap:10px; width:100%; text-align:left; margin:5px 0; padding:8px 12px; }
+  .lv .n { color:var(--dim); width:22px; } .lv .s { margin-left:auto; color:var(--warn); letter-spacing:2px; white-space:nowrap; }
+  .lv small { color:var(--dim); display:block; }
+  #sand { display:none; align-items:center; gap:8px; }
+  input[type=range] { width:110px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <button id="bMenu">☰ Меню</button>
+  <div class="m"><small id="mode">Уровень</small><span id="title"></span></div>
+  <div class="m"><small>Время</small><b id="tm">0</b></div>
+  <div class="m"><small>Запросов/с</small><b id="rps">0</b></div>
+  <div class="m"><small>Ошибки</small><b id="err">0%</b></div>
+  <div class="m"><small>Задержка</small><b id="lat">0 мс</b></div>
+  <div class="m"><small>Стоимость</small><b id="cost">$0/ч</b></div>
+  <div id="sand"><label>RPS <input type="range" id="sRps" min="10" max="20000" value="500"></label>
+    <label>Чтения <input type="range" id="sRat" min="0" max="100" value="80"></label></div>
+  <span style="flex:1"></span>
+  <button id="b1" class="sel">1×</button><button id="b2">2×</button><button id="b4">4×</button>
+  <button id="bGo" class="primary">▶ Запуск</button>
+  <button id="bReset">↺</button>
+</div>
+<div id="goals"></div>
+<div id="insp"></div>
+<canvas id="cv"></canvas>
+<div id="pal"></div>
+<div id="ov"><div class="card" id="card"></div></div>
+
+<script id="core">
+'use strict';
+// ================= ЯДРО СИМУЛЯЦИИ (без DOM) =================
+const NT = {
+  src:   { name:'Пользователи', icon:'👥', cap:1e12, cost:0,  lat:0,  desc:'Источник трафика. К нему можно подключить только одну точку входа.' },
+  lb:    { name:'Балансировщик',icon:'⚖️', cap:8000,  cost:20, lat:1,  desc:'Раздаёт запросы по живым потомкам пропорционально их мощности. Пропускает 8000 запр/с.' },
+  cdn:   { name:'CDN',          icon:'🌐', cap:50000, cost:30, lat:3,  hit:0.7, desc:'Отдаёт 70% чтений из ближайшей точки, не доводя до серверов. Записи пропускает дальше.' },
+  app:   { name:'Сервер',       icon:'🖥️', cap:500,   cost:12, lat:10, desc:'Обрабатывает запросы (500/с). Чтения шлёт в кэш (или БД), записи — в очередь (или БД).' },
+  cache: { name:'Кэш',          icon:'⚡', cap:20000, cost:25, lat:2,  hit:0.8, desc:'80% чтений отдаёт мгновенно, остальные (промахи) и все записи идут в БД.' },
+  db:    { name:'База данных',  icon:'🗄️', cap:500,   cost:50, lat:25, desc:'Медленная, но надёжная. Чтение = 1 единица нагрузки, запись = 2. Ёмкость 500.' },
+  queue: { name:'Очередь',      icon:'📬', cap:10000, cost:15, lat:3,  buf:20000, desc:'Мгновенно подтверждает запись и копит в буфере (20 000). Разбирают её воркеры.' },
+  worker:{ name:'Воркер',       icon:'⚙️', cap:300,   cost:10, lat:0,  desc:'Забирает записи из очереди (300/с) и складывает в БД.' },
+};
+const TIER_CAP = [1, 2, 4], TIER_COST = [1, 1.8, 3.2];
+const ALL = ['lb','cdn','app','cache','db','queue','worker'];
+
+const LEVELS = [
+  { name:'Первый сервер', story:'Стартап запустился. Подключите пользователей к серверу.',
+    dur:30, rps:150, ratio:0.8, stateful:false, allowed:['app'], goal:{err:.01, lat:60, cost:20}, events:[] },
+  { name:'Толпа', story:'Пришла толпа. Один сервер не справится, а вход у пользователей только один — нужен балансировщик.',
+    dur:40, rps:1800, ratio:0.8, stateful:false, allowed:['lb','app'], goal:{err:.01, lat:60, cost:100}, events:[] },
+  { name:'Данные', story:'Теперь нужно хранить данные. Сервер без БД не может обслужить запрос. Запись в БД тяжелее чтения.',
+    dur:40, rps:1000, ratio:0.8, stateful:true, allowed:['lb','app','db'], goal:{err:.01, lat:70, cost:260}, events:[] },
+  { name:'Кэш', story:'90% запросов — чтения одних и тех же данных. Пользователям нужны ответы быстрее 35 мс.',
+    dur:45, rps:4000, ratio:0.9, stateful:true, allowed:['lb','app','db','cache'], goal:{err:.01, lat:35, cost:420}, events:[] },
+  { name:'Очередь', story:'Иногда прилетает шквал записей. БД такого не выдержит — принимайте записи в очередь и разбирайте воркерами.',
+    dur:50, rps:1500, ratio:0.8, stateful:true, allowed:['lb','app','db','cache','queue','worker'], goal:{err:.02, lat:40, cost:380},
+    events:[{from:15,to:27,type:'writes',ratio:0.3}] },
+  { name:'Отказ', story:'Железо ломается. Сервер и база упадут посреди работы. Не держите всё на одной машине.',
+    dur:60, rps:3000, ratio:0.85, stateful:true, allowed:['lb','app','db','cache','queue','worker'], goal:{err:.03, lat:40, cost:450},
+    events:[{from:15,to:30,type:'crash',target:'app'},{from:38,to:50,type:'crash',target:'db'}] },
+  { name:'Весь мир', story:'Аудитория выросла в десять раз, и почти всё — статика и чтения. Дешевле всего разгрузить серверы CDN-ом.',
+    dur:45, rps:8000, ratio:0.95, stateful:true, allowed:ALL, goal:{err:.02, lat:30, cost:380}, events:[] },
+  { name:'Чёрная пятница', story:'Трафик утроится на 15 секунд. Платите за мощность, только когда она нужна — редактировать схему можно на ходу.',
+    dur:60, rps:2000, ratio:0.9, stateful:true, allowed:ALL, goal:{err:.03, lat:40, cost:540},
+    events:[{from:15,to:32,type:'spike',mult:3}] },
+  { name:'Полный набор', story:'Всё сразу: пик, шквал записей и два отказа.',
+    dur:75, rps:5000, ratio:0.85, stateful:true, allowed:ALL, goal:{err:.03, lat:40, cost:750},
+    events:[{from:12,to:24,type:'spike',mult:2},{from:30,to:42,type:'crash',target:'app'},
+            {from:45,to:57,type:'writes',ratio:0.4},{from:62,to:72,type:'crash',target:'db'}] },
+];
+
+let G = null;
+const B = () => ({ r:0, w:0, lr:0, lw:0 });
+const tot = b => b.r + b.w;
+const addTo = (t, b, k=1) => { t.r+=b.r*k; t.w+=b.w*k; t.lr+=b.lr*k; t.lw+=b.lw*k; };
+const scaled = (b, k) => { const o=B(); addTo(o,b,k); return o; };
+
+function rng(seed) { let s=seed>>>0; return () => (s = (s*1664525+1013904223)>>>0) / 4294967296; }
+
+function newGame(mode, levelIdx) {
+  const lvl = mode==='level' ? LEVELS[levelIdx] : mode==='survival'
+    ? { name:'Выживание', story:'Нагрузка растёт, инциденты учащаются. Продержитесь как можно дольше.', dur:Infinity, rps:300, ratio:0.85, stateful:true, allowed:ALL, goal:null, events:genSurvival() }
+    : { name:'Песочница', story:'Стройте что угодно. Нагрузку задают ползунки сверху.', dur:Infinity, rps:500, ratio:0.8, stateful:true, allowed:ALL, goal:null, events:[] };
+  G = { mode, levelIdx, level:lvl, nodes:[{id:0,type:'src',x:80,y:280,tier:0,downUntil:0,in:null,util:0}], edges:[], nextId:1,
+        time:0, running:false, done:null, costInt:0, bad:0, failT:0, sandRps:500, sandRatio:0.8,
+        m:{rps:0,err:0,lat:0,cost:0}, evState:lvl.events.map(()=>({hit:null})) };
+  return G;
+}
+function genSurvival() {
+  const r = rng(12345), ev = [];
+  for (let t=15; t<1200; t+=10+r()*10) {
+    const k = r();
+    if (k<0.4) ev.push({from:t,to:t+8,type:'spike',mult:1.6+r()*1.2});
+    else if (k<0.75) ev.push({from:t,to:t+12,type:'crash',target:r()<.6?'app':'db'});
+    else ev.push({from:t,to:t+10,type:'writes',ratio:0.4});
+  }
+  return ev;
+}
+const nodeById = id => G.nodes.find(n=>n.id===id);
+const alive = n => n.downUntil <= G.time;
+const capOf = n => alive(n) ? NT[n.type].cap * TIER_CAP[n.tier] : 0;
+const nodeCost = n => NT[n.type].cost * TIER_COST[n.tier];
+const kidsOf = n => G.edges.filter(e=>e.a===n.id).map(e=>({n:nodeById(e.b), e}));
+
+function reaches(from, to) { // есть ли путь from -> to
+  const seen = new Set([from]), st=[from];
+  while (st.length) { const x=st.pop(); if (x===to) return true;
+    for (const e of G.edges) if (e.a===x && !seen.has(e.b)) { seen.add(e.b); st.push(e.b); } }
+  return false;
+}
+function addNode(type, x, y) {
+  if (!G.level.allowed.includes(type)) return null;
+  const n = { id:G.nextId++, type, x, y, tier:0, downUntil:0, backlog:0, in:null, util:0 };
+  G.nodes.push(n); return n;
+}
+function connect(a, b) {
+  if (a===b || b===0) return 'no';
+  if (G.edges.some(e=>e.a===a&&e.b===b)) return 'dup';
+  if (a===0 && G.edges.some(e=>e.a===0)) return 'src1';
+  if (reaches(b, a)) return 'cycle';
+  G.edges.push({a, b, rate:0}); return 'ok';
+}
+function removeNode(id) { if (id===0) return; G.nodes=G.nodes.filter(n=>n.id!==id); G.edges=G.edges.filter(e=>e.a!==id&&e.b!==id); }
+function upgrade(n) { if (n.tier<2 && n.type!=='src') n.tier++; }
+
+function topo() {
+  const indeg = new Map(G.nodes.map(n=>[n.id,0]));
+  G.edges.forEach(e=>indeg.set(e.b, indeg.get(e.b)+1));
+  const q = G.nodes.filter(n=>indeg.get(n.id)===0), out=[];
+  while (q.length) { const n=q.shift(); out.push(n);
+    for (const e of G.edges) if (e.a===n.id) { indeg.set(e.b, indeg.get(e.b)-1); if (indeg.get(e.b)===0) q.push(nodeById(e.b)); } }
+  return out;
+}
+
+function currentLoad() {
+  const L = G.level;
+  let rps = G.mode==='sandbox' ? G.sandRps : L.rps, ratio = G.mode==='sandbox' ? G.sandRatio : L.ratio;
+  if (G.mode==='survival') rps = 300 + 35*G.time;
+  L.events.forEach(ev => { if (G.time>=ev.from && G.time<ev.to) {
+    if (ev.type==='spike') rps*=ev.mult; else if (ev.type==='writes') ratio=ev.ratio; } });
+  return { rps, ratio };
+}
+function applyEvents() {
+  G.level.events.forEach((ev,i) => {
+    if (ev.type!=='crash' || G.time<ev.from || G.time>=ev.to) return;
+    const st = G.evState[i];
+    if (st.hit===null) {
+      const c = G.nodes.filter(n=>n.type===ev.target && alive(n));
+      st.hit = c.length ? c[0].id : -1;
+      if (st.hit>=0) nodeById(st.hit).downUntil = ev.to;
+    }
+  });
+}
+
+function route(targets, s, a, M) {
+  targets = targets.filter(t=>alive(t.n));
+  const T = tot(s)+tot(a); if (T<=0) return;
+  if (!targets.length) { M.err += T; return; }
+  const ws = targets.map(t=>capOf(t.n)), sum = ws.reduce((x,y)=>x+y,0);
+  targets.forEach((t,i)=>{ const k=ws[i]/sum, ss=scaled(s,k), aa=scaled(a,k);
+    addTo(t.n.in.s, ss); addTo(t.n.in.a, aa); t.e.rate += (tot(ss)+tot(aa)); });
+}
+
+function proc(n, dt, M) {
+  const def = NT[n.type], s = n.in.s, a = n.in.a;
+  const wc = n.type==='db' ? 2 : 1;
+  const units = s.r + a.r + (s.w + a.w)*wc;
+  const cap = capOf(n);
+  n.util = cap>0 ? units/cap : (units>0 ? 9 : 0);
+  const acc = units<=0 ? 1 : Math.min(1, cap/units);
+  M.err += (tot(s)+tot(a))*(1-acc);
+  const u = Math.min(n.util, 1.2), L = def.lat*(1+2*u*u*u*u);
+  const S = scaled(s,acc), A = scaled(a,acc);
+  S.lr += S.r*L; S.lw += S.w*L;
+  const all = kidsOf(n);
+  switch (n.type) {
+    case 'lb': route(all, S, A, M); break;
+    case 'cdn': case 'cache': {
+      const h = def.hit;
+      M.comp.r += S.r*h; M.comp.lr += S.lr*h;
+      const miss = { r:S.r*(1-h), w:S.w, lr:S.lr*(1-h), lw:S.lw };
+      const dbs = all.filter(k=>k.n.type==='db');
+      route(n.type==='cache' && dbs.length ? dbs : all, miss, A, M);
+      break; }
+    case 'app': {
+      const caches=all.filter(k=>k.n.type==='cache'), dbs=all.filter(k=>k.n.type==='db'), qs=all.filter(k=>k.n.type==='queue');
+      if (!caches.length && !dbs.length && !qs.length) {
+        if (all.length) route(all, S, A, M);
+        else if (!G.level.stateful) addTo(M.comp, S);
+        else M.err += tot(S)+tot(A);
+        break;
+      }
+      route(caches.length?caches:dbs.length?dbs:qs, { r:S.r, w:0, lr:S.lr, lw:0 }, B(), M);
+      route(qs.length?qs:dbs.length?dbs:caches, { r:0, w:S.w, lr:0, lw:S.lw }, B(), M);
+      break; }
+    case 'queue': {
+      addTo(M.comp, { r:0, w:S.w, lr:0, lw:S.lw });
+      M.err += S.r;
+      const workers = all.filter(k=>k.n.type==='worker');
+      const drainCap = workers.reduce((x,k)=>x+capOf(k.n),0);
+      const avail = n.backlog/dt + S.w;
+      const drain = Math.min(avail, drainCap);
+      n.backlog += (S.w - drain)*dt;
+      if (n.backlog<0) n.backlog=0;
+      if (n.backlog>def.buf) { M.err += (n.backlog-def.buf)/dt; n.backlog=def.buf; }
+      if (drain>0) route(workers, B(), { r:0, w:drain, lr:0, lw:0 }, M);
+      break; }
+    case 'worker': route(all.filter(k=>k.n.type==='db').length?all.filter(k=>k.n.type==='db'):all, B(), A, M); break;
+    case 'db': addTo(M.comp, S); break;
+  }
+}
+
+function simulate(dt) {
+  const M = { err:0, comp:B() }, { rps, ratio } = currentLoad();
+  G.nodes.forEach(n=>{ n.in={s:B(),a:B()}; n.util=0; });
+  G.edges.forEach(e=>e.rate=0);
+  const src = G.nodes[0];
+  route(kidsOf(src), { r:rps*ratio, w:rps*(1-ratio), lr:0, lw:0 }, B(), M);
+  topo().forEach(n=>{ if (n.type!=='src') proc(n, dt, M); });
+  const done = tot(M.comp);
+  G.m = { rps, err: rps>0 ? Math.min(1, M.err/rps) : 0, lat: done>0 ? (M.comp.lr+M.comp.lw)/done : 0,
+          cost: G.nodes.reduce((x,n)=>x+nodeCost(n),0) };
+}
+
+function step(dt) {
+  applyEvents();
+  simulate(dt);
+  if (!G.running) return;
+  const g = G.level.goal, m = G.m;
+  G.time += dt; G.costInt += m.cost*dt;
+  if (g) {
+    if (m.err > g.err || m.lat > g.lat) G.bad += dt;
+    if (G.time >= G.level.dur) finish();
+  } else if (G.mode==='survival') {
+    G.failT = m.err>0.3 ? G.failT+dt : 0;
+    if (G.failT>=5) finish();
+  }
+}
+function finish() {
+  G.running = false;
+  if (G.mode==='survival') { G.done = { survival:true, secs:Math.floor(G.time) }; return; }
+  const g=G.level.goal, avg=G.costInt/G.level.dur, badFrac=G.bad/G.level.dur;
+  const pass = badFrac<=0.1 && avg<=g.cost;
+  let stars = 0;
+  if (pass) { stars=1; if (avg<=g.cost*0.8) stars=2; if (avg<=g.cost*0.65 && badFrac<=0.02) stars=3; }
+  G.done = { pass, stars, avg, badFrac };
+}
+if (typeof module!=='undefined') module.exports = { NT, LEVELS, newGame, addNode, connect, upgrade, step, get G(){return G;} };
+</script>
+
+<script id="ui">
+// ================= ИНТЕРФЕЙС =================
+if (typeof document !== 'undefined') (function(){
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const VW = 1000, VH = 560, NW = 96, NH = 58;
+let sc = 1, ox = 0, oy = 0, speed = 1, sel = null, selEdge = null, drag = null, conn = null, mouse = {x:0,y:0};
+let prog = {};
+try { prog = JSON.parse(localStorage.getItem('infrasim2')||'{}'); } catch(e) {}
+const saveProg = () => { try { localStorage.setItem('infrasim2', JSON.stringify(prog)); } catch(e) {} };
+
+function resize() {
+  const top = $('hud').offsetHeight, bot = 64;
+  cv.style.top = top+'px'; cv.width = innerWidth; cv.height = innerHeight-top-bot; cv.style.height = cv.height+'px';
+  sc = Math.min(cv.width/VW, cv.height/VH); ox = (cv.width-VW*sc)/2; oy = (cv.height-VH*sc)/2;
+  $('insp').style.top = (top+10)+'px'; $('goals').style.top = (top+10)+'px';
+}
+addEventListener('resize', resize);
+const toLogical = e => { const r=cv.getBoundingClientRect(); return { x:(e.clientX-r.left-ox)/sc, y:(e.clientY-r.top-oy)/sc }; };
+
+// ----- палитра -----
+function buildPalette() {
+  const p = $('pal'); p.innerHTML='';
+  G.level.allowed.forEach(t => {
+    const b = document.createElement('button'), d = NT[t];
+    b.innerHTML = `${d.icon} ${d.name}<small>$${d.cost}/ч</small>`;
+    b.onclick = () => { const pos = freeSpot(); const n = addNode(t, pos.x, pos.y); sel = n; selEdge = null; showInsp(); };
+    p.appendChild(b);
+  });
+}
+function freeSpot() {
+  for (let x=230; x<=900; x+=120) for (let y=100; y<=480; y+=95)
+    if (!G.nodes.some(n=>Math.abs(n.x-x)<NW && Math.abs(n.y-y)<NH+8)) return {x,y};
+  return { x:200+Math.random()*700, y:80+Math.random()*400 };
+}
+
+// ----- инспектор -----
+function showInsp() {
+  const el = $('insp');
+  if (selEdge) { el.style.display='block';
+    el.innerHTML = `<h3>Связь</h3><p>Поток: ${Math.round(selEdge.rate)} запр/с</p><div class="row"><button id="iDel">🗑 Удалить связь</button></div>`;
+    $('iDel').onclick = () => { G.edges = G.edges.filter(e=>e!==selEdge); selEdge=null; showInsp(); }; return; }
+  if (!sel || !G.nodes.includes(sel)) { el.style.display='none'; return; }
+  const d = NT[sel.type]; el.style.display='block';
+  const cap = sel.type==='src' ? '' : `<p>Уровень: ${sel.tier+1}/3 · мощность ${Math.round(d.cap*TIER_CAP[sel.tier])} · $${(nodeCostOf(sel)).toFixed(0)}/ч</p>`;
+  let btns = '';
+  if (sel.type!=='src') {
+    const next = sel.tier<2 ? Math.round(d.cost*TIER_COST[sel.tier+1]-d.cost*TIER_COST[sel.tier]) : 0;
+    btns = `<div class="row">${sel.tier>0?`<button id="iDn">⬇ Понизить</button>`:''}${sel.tier<2?`<button id="iUp">⬆ Улучшить (+$${next}/ч)</button>`:''}<button id="iDel">🗑 Удалить</button></div>`;
+  }
+  el.innerHTML = `<h3>${d.icon} ${d.name}</h3><p>${d.desc}</p>${cap}${btns}<p style="margin-bottom:0">Совет: потяните за кружок справа от блока, чтобы соединить его с другим.</p>`;
+  if ($('iUp')) $('iUp').onclick = () => { upgrade(sel); showInsp(); };
+  if ($('iDn')) $('iDn').onclick = () => { sel.tier--; showInsp(); };
+  if ($('iDel')) $('iDel').onclick = () => { removeNode(sel.id); sel=null; showInsp(); };
+}
+const nodeCostOf = n => NT[n.type].cost*TIER_COST[n.tier];
+
+// ----- ввод -----
+const inNode = (n,p) => Math.abs(p.x-n.x)<=NW/2 && Math.abs(p.y-n.y)<=NH/2;
+const onPort = (n,p) => Math.hypot(p.x-(n.x+NW/2), p.y-n.y) <= 13;
+function edgePts(e) { const a=nodeById(e.a), b=nodeById(e.b); return [a.x+NW/2, a.y, b.x-NW/2, b.y]; }
+function bez(t, x0,y0,x1,y1) { const c=Math.max(40,Math.abs(x1-x0)/2), mt=1-t;
+  return { x: mt**3*x0+3*mt*mt*t*(x0+c)+3*mt*t*t*(x1-c)+t**3*x1, y: mt**3*y0+3*mt*mt*t*y0+3*mt*t*t*y1+t**3*y1 }; }
+function edgeAt(p) {
+  for (const e of G.edges) { const [x0,y0,x1,y1]=edgePts(e);
+    for (let t=0;t<=1;t+=0.05) { const q=bez(t,x0,y0,x1,y1); if (Math.hypot(q.x-p.x,q.y-p.y)<9) return e; } }
+  return null;
+}
+cv.addEventListener('pointerdown', e => {
+  cv.setPointerCapture(e.pointerId);
+  const p = toLogical(e); mouse = p;
+  const nodes = [...G.nodes].reverse();
+  for (const n of nodes) if (onPort(n,p)) { conn = { from:n }; sel=n; selEdge=null; showInsp(); return; }
+  for (const n of nodes) if (inNode(n,p)) { drag = { n, dx:p.x-n.x, dy:p.y-n.y }; sel=n; selEdge=null; showInsp(); return; }
+  const ed = edgeAt(p);
+  if (ed) { selEdge=ed; sel=null; } else { selEdge=null; sel=null; }
+  showInsp();
+});
+cv.addEventListener('pointermove', e => {
+  const p = toLogical(e); mouse = p;
+  if (drag && drag.n.type!=='src') { drag.n.x = Math.max(NW/2, Math.min(VW-NW/2, p.x-drag.dx)); drag.n.y = Math.max(NH/2, Math.min(VH-NH/2, p.y-drag.dy)); }
+  else if (drag) { drag.n.y = Math.max(NH/2, Math.min(VH-NH/2, p.y-drag.dy)); }
+});
+cv.addEventListener('pointerup', e => {
+  const p = toLogical(e);
+  if (conn) {
+    const t = G.nodes.find(n=>n!==conn.from && inNode(n,p));
+    if (t) { const r = connect(conn.from.id, t.id);
+      if (r==='cycle') toast('Циклы запрещены'); else if (r==='src1') toast('У пользователей одна точка входа'); else if (r==='dup') toast('Такая связь уже есть'); }
+    conn = null;
+  }
+  drag = null;
+});
+addEventListener('keydown', e => {
+  if ((e.key==='Delete'||e.key==='Backspace') && !$('ov').style.display.includes('flex')) {
+    if (selEdge) { G.edges=G.edges.filter(x=>x!==selEdge); selEdge=null; showInsp(); }
+    else if (sel && sel.type!=='src') { removeNode(sel.id); sel=null; showInsp(); }
+  }
+  if (e.code==='Space' && !$('ov').style.display.includes('flex')) { e.preventDefault(); $('bGo').click(); }
+});
+let toastT = null, toastEl = document.createElement('div');
+toastEl.style.cssText='position:fixed;top:120px;left:50%;transform:translateX(-50%);background:#000c;padding:6px 14px;border-radius:8px;z-index:5;opacity:0;transition:opacity .25s;pointer-events:none';
+document.body.appendChild(toastEl);
+function toast(t) { toastEl.textContent=t; toastEl.style.opacity=1; clearTimeout(toastT); toastT=setTimeout(()=>toastEl.style.opacity=0,1600); }
+
+// ----- отрисовка -----
+const col = u => u>=1 ? '#ff5d5d' : u>=.75 ? '#f0b83a' : '#4cd07d';
+function rr(x,y,w,h,r) { ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function draw() {
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.translate(ox,oy); ctx.scale(sc,sc);
+  ctx.fillStyle='#ffffff10';
+  for (let x=20;x<VW;x+=40) for (let y=20;y<VH;y+=40) ctx.fillRect(x,y,2,2);
+  const now = performance.now()/1000;
+  // связи
+  G.edges.forEach(e => {
+    const [x0,y0,x1,y1]=edgePts(e), tgt=nodeById(e.b);
+    const bad = tgt.util>=1 || !alive(tgt);
+    ctx.lineWidth = (e===selEdge?4:2) + Math.min(4, Math.log10(1+e.rate)*0.8);
+    ctx.strokeStyle = e===selEdge ? '#4da3ff' : (bad?'#ff5d5d66':'#5b6b7e');
+    ctx.beginPath(); ctx.moveTo(x0,y0); const c=Math.max(40,Math.abs(x1-x0)/2);
+    ctx.bezierCurveTo(x0+c,y0,x1-c,y1,x1,y1); ctx.stroke();
+    ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x1-9,y1-5); ctx.lineTo(x1-9,y1+5); ctx.fill();
+    if (e.rate>0.5) { const cnt=Math.min(9,1+Math.floor(Math.log10(1+e.rate)*2.2));
+      ctx.fillStyle = bad?'#ff8a8a':'#8fd0ff';
+      for (let i=0;i<cnt;i++) { const q=bez(((now*0.5*Math.max(1,speed*0.6))+i/cnt)%1,x0,y0,x1,y1); ctx.beginPath(); ctx.arc(q.x,q.y,3,0,7); ctx.fill(); } }
+  });
+  if (conn) { ctx.setLineDash([6,5]); ctx.strokeStyle='#4da3ff'; ctx.lineWidth=2; ctx.beginPath();
+    ctx.moveTo(conn.from.x+NW/2,conn.from.y); ctx.lineTo(mouse.x,mouse.y); ctx.stroke(); ctx.setLineDash([]); }
+  // узлы
+  G.nodes.forEach(n => {
+    const d=NT[n.type], up=alive(n), x=n.x-NW/2, y=n.y-NH/2;
+    ctx.fillStyle = up?'#1c2733':'#2a2a2a'; rr(x,y,NW,NH,10); ctx.fill();
+    ctx.lineWidth = n===sel?3:2;
+    ctx.strokeStyle = n===sel?'#4da3ff' : !up?'#666' : n.type==='src'?'#4da3ff' : col(n.util);
+    ctx.stroke();
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='22px sans-serif'; ctx.fillStyle='#fff'; ctx.fillText(up?d.icon:'💥', n.x, n.y-8);
+    ctx.font='11px system-ui'; ctx.fillStyle='#b9c4d2'; ctx.fillText(d.name, n.x, n.y+13);
+    if (n.type!=='src') {
+      ctx.fillStyle='#0008'; ctx.fillRect(x+8,y+NH-9,NW-16,4);
+      ctx.fillStyle=col(n.util); ctx.fillRect(x+8,y+NH-9,(NW-16)*Math.min(1,n.util),4);
+      ctx.fillStyle='#8b97a8'; ctx.font='10px system-ui'; ctx.textAlign='left';
+      ctx.fillText('●'.repeat(n.tier+1), x+6, y+9);
+      ctx.textAlign='right'; ctx.fillText(Math.round(n.util*100)+'%', x+NW-6, y+9);
+    }
+    if (n.type==='queue') { ctx.textAlign='center'; ctx.fillStyle=n.backlog>NT.queue.buf*.7?'#ff5d5d':'#8b97a8'; ctx.font='10px system-ui'; ctx.fillText('в буфере: '+Math.round(n.backlog), n.x, y-8); }
+    if (n.type!=='src' || true) { ctx.fillStyle = n===sel?'#4da3ff':'#3a4a5d'; ctx.beginPath(); ctx.arc(n.x+NW/2,n.y,7,0,7); ctx.fill(); ctx.strokeStyle='#0f141b'; ctx.lineWidth=2; ctx.stroke(); }
+  });
+  // инциденты
+  const act = G.level.events.filter(ev=>G.time>=ev.from&&G.time<ev.to&&G.running);
+  if (act.length) { ctx.textAlign='center'; ctx.font='bold 15px system-ui'; ctx.fillStyle='#ff8a5d';
+    ctx.fillText('⚠ '+act.map(ev=>ev.type==='spike'?'ПИК НАГРУЗКИ ×'+ev.mult.toFixed(1):ev.type==='crash'?'ОТКАЗ: '+NT[ev.target].name:'ШКВАЛ ЗАПИСЕЙ').join(' · '), VW/2, 24); }
+}
+
+// ----- HUD -----
+function hud() {
+  const m=G.m, g=G.level.goal;
+  $('title').textContent = G.level.name;
+  $('mode').textContent = G.mode==='level' ? 'Уровень '+(G.levelIdx+1) : G.mode==='survival' ? 'Выживание' : 'Песочница';
+  $('tm').textContent = Math.floor(G.time)+(isFinite(G.level.dur)?' / '+G.level.dur:'')+' c';
+  $('rps').textContent = Math.round(m.rps);
+  $('err').textContent = (m.err*100).toFixed(1)+'%'; $('err').className = g ? (m.err>g.err?'bad':'good') : (m.err>.05?'bad':'good');
+  $('lat').textContent = Math.round(m.lat)+' мс'; $('lat').className = g ? (m.lat>g.lat?'bad':'good') : '';
+  $('cost').textContent = '$'+Math.round(m.cost)+'/ч'; $('cost').className = g ? (m.cost>g.cost?'warn':'') : '';
+  let gt = `<b>${G.level.story}</b>`;
+  if (g) gt += `<br>Цели: ошибки ≤ ${g.err*100}% · задержка ≤ ${g.lat} мс · ср. стоимость ≤ $${g.cost}/ч<br>Допустимо «плохих» секунд: ${(G.level.dur*0.1).toFixed(0)} (сейчас ${G.bad.toFixed(0)})`;
+  else if (G.mode==='survival') gt += `<br>Лучший результат: ${prog.survBest||0} c`;
+  if ($('goals').dataset.h !== gt) { $('goals').innerHTML = gt; $('goals').dataset.h = gt; }
+  $('bGo').textContent = G.running ? '⏸ Пауза' : (G.time>0 ? '▶ Дальше' : '▶ Запуск');
+}
+
+// ----- меню и результаты -----
+function overlay(html) { $('card').innerHTML = html; $('ov').style.display = 'flex'; }
+function closeOv() { $('ov').style.display = 'none'; }
+function stars(n) { return '★'.repeat(n)+'☆'.repeat(3-n); }
+function menu() {
+  G && (G.running = false);
+  let h = `<h2>InfraSim</h2><p>Проектируйте инфраструктуру: перетаскивайте компоненты, соединяйте их и смотрите, как система живёт под нагрузкой. Следите за <b>задержкой</b>, <b>стоимостью</b> и <b>ошибками</b>.</p><h3>Кампания</h3>`;
+  LEVELS.forEach((l,i) => { h += `<button class="lv" data-l="${i}"><span class="n">${i+1}</span><span>${l.name}<small>${l.story.slice(0,70)}…</small></span><span class="s">${stars(prog['l'+i]||0)}</span></button>`; });
+  h += `<h3>Режимы</h3><button class="lv" data-m="survival"><span>♾ Выживание<small>Бесконечная нагрузка и инциденты. Рекорд: ${prog.survBest||0} c</small></span></button>
+        <button class="lv" data-m="sandbox"><span>🧪 Песочница<small>Свободное строительство, нагрузка вручную</small></span></button>`;
+  if (G) h += `<p style="text-align:right"><button id="cont">Продолжить</button></p>`;
+  overlay(h);
+  document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => start('level', +b.dataset.l));
+  document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => start(b.dataset.m));
+  if ($('cont')) $('cont').onclick = closeOv;
+}
+function start(mode, idx) {
+  newGame(mode, idx); sel=null; selEdge=null; conn=null; drag=null;
+  $('sand').style.display = mode==='sandbox' ? 'flex' : 'none';
+  $('sRps').value = 500; $('sRat').value = 80;
+  buildPalette(); showInsp(); resize(); closeOv();
+  $('goals').dataset.h='';
+}
+function result() {
+  const d = G.done; G.done = null;
+  if (d.survival) {
+    const best = d.secs > (prog.survBest||0); if (best) { prog.survBest = d.secs; saveProg(); }
+    overlay(`<h2>Система упала</h2><p>Вы продержались <b>${d.secs} c</b>${best?' — новый рекорд!':''}.</p><p><button id="r1" class="primary">Ещё раз</button> <button id="r2">Меню</button></p>`);
+    $('r1').onclick = () => start('survival'); $('r2').onclick = menu; return;
+  }
+  if (d.pass && d.stars > (prog['l'+G.levelIdx]||0)) { prog['l'+G.levelIdx] = d.stars; saveProg(); }
+  const g = G.level.goal;
+  overlay(`<h2>${d.pass?'Уровень пройден!':'Не получилось'}</h2>
+    <p style="font-size:22px;color:var(--warn);margin:0">${stars(d.stars)}</p>
+    <p>Средняя стоимость: <b class="${d.avg>g.cost?'bad':'good'}">$${d.avg.toFixed(0)}/ч</b> (лимит $${g.cost})<br>
+    Плохих секунд: <b class="${d.badFrac>0.1?'bad':'good'}">${(d.badFrac*100).toFixed(0)}%</b> (допустимо ≤ 10%)</p>
+    <p>${d.pass ? '★★ — стоимость ≤ 80% лимита, ★★★ — ≤ 65% и почти без сбоев.' : 'Смотрите, где загорается красным: узкое место — там, где загрузка ≥ 100%.'}</p>
+    <p><button id="r1">Повторить</button> ${d.pass&&G.levelIdx<LEVELS.length-1?'<button id="r3" class="primary">Дальше →</button>':''} <button id="r2">Меню</button></p>`);
+  $('r1').onclick = () => { G.time=0; G.running=false; G.costInt=0; G.bad=0; G.nodes.forEach(n=>{n.downUntil=0;n.backlog=0;}); G.evState=G.level.events.map(()=>({hit:null})); closeOv(); };
+  $('r2').onclick = menu; if ($('r3')) $('r3').onclick = () => start('level', G.levelIdx+1);
+}
+
+$('bMenu').onclick = menu;
+$('bGo').onclick = () => { if (G.done) return; G.running = !G.running; };
+$('bReset').onclick = () => { G.time=0; G.running=false; G.costInt=0; G.bad=0; G.failT=0; G.nodes.forEach(n=>{n.downUntil=0;n.backlog=0;}); G.evState=G.level.events.map(()=>({hit:null})); };
+[['b1',1],['b2',2],['b4',4]].forEach(([id,v]) => $(id).onclick = () => { speed=v; ['b1','b2','b4'].forEach(x=>$(x).classList.toggle('sel',x===id)); });
+$('sRps').oninput = e => G.sandRps = +e.target.value;
+$('sRat').oninput = e => G.sandRatio = +e.target.value/100;
+
+// ----- цикл -----
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(0.25, (now-last)/1000); last = now;
+  const dt = 0.1;
+  while (acc >= dt) { acc -= dt; if (G.running) step(dt*speed); else step(0.0001 + 0); }
+  if (G.done) result();
+  hud(); draw();
+  requestAnimationFrame(loop);
+}
+
+resize(); newGame('level', 0); buildPalette(); menu(); requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
