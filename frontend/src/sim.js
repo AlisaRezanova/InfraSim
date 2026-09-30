@@ -10,9 +10,17 @@ export const NT = {
   db:    { name:'База данных',  icon:'🗄️', cap:500,   cost:50, lat:25, desc:'Медленная, но надёжная. Чтение = 1 единица нагрузки, запись = 2. Ёмкость 500.' },
   queue: { name:'Очередь',      icon:'📬', cap:10000, cost:15, lat:3,  buf:20000, desc:'Мгновенно подтверждает запись и копит в буфере (20 000). Разбирают её воркеры.' },
   worker:{ name:'Воркер',       icon:'⚙️', cap:300,   cost:10, lat:0,  desc:'Забирает записи из очереди (300/с) и складывает в БД.' },
+  redis: { name:'Redis',        icon:'🔴', cap:40000, cost:40, lat:1,  hit:0.9, desc:'Быстрый кэш в памяти: отдаёт 90% чтений и почти не добавляет задержки. Дороже обычного кэша.' },
+  replica:{name:'Реплика БД',   icon:'📑', cap:500,   cost:35, lat:20, desc:'Копия БД только для чтения (500/с). Записи не принимает — они должны идти в основную БД.' },
+  nosql: { name:'NoSQL',        icon:'🍃', cap:1200,  cost:70, lat:15, desc:'Быстрее и ёмче обычной БД (1200/с), запись стоит 1 единицу, а не 2. Но заметно дороже.' },
+  kafka: { name:'Kafka',        icon:'📨', cap:50000, cost:60, lat:4,  buf:200000, desc:'Очередь-гигант: буфер 200 000 и 50 000 запр/с. Для больших шквалов записей, но дороже обычной очереди.' },
+  lambda:{ name:'Serverless',   icon:'λ',  cap:3000,  cost:2,  lat:25, desc:'Сервер «по требованию»: платите за фактическую нагрузку (дёшево при малом трафике), но каждый запрос медленнее из-за холодного старта. Не падает при отказах серверов.' },
 };
 export const TIER_CAP = [1, 2, 4], TIER_COST = [1, 1.8, 3.2];
-const ALL = ['lb','cdn','app','cache','db','queue','worker'];
+const ALL = ['lb','cdn','app','lambda','cache','redis','db','replica','nosql','queue','kafka','worker'];
+// Роли компонентов: по ним работает маршрутизация.
+const CACHES = ['cache','redis'], STORES = ['db','nosql'], QUEUES = ['queue','kafka'];
+const LAMBDA_PER_RPS = 0.03;
 
 
 export let G = null;
@@ -45,7 +53,9 @@ function genSurvival() {
 export const nodeById = id => G.nodes.find(n=>n.id===id);
 export const alive = n => n.downUntil <= G.time;
 export const capOf = n => alive(n) ? NT[n.type].cap * TIER_CAP[n.tier] : 0;
-export const nodeCost = n => NT[n.type].cost * TIER_COST[n.tier];
+export const nodeCost = n => n.type==='lambda'
+  ? NT.lambda.cost + (n.units||0)*LAMBDA_PER_RPS   // платим за фактическую нагрузку
+  : NT[n.type].cost * TIER_COST[n.tier];
 const kidsOf = n => G.edges.filter(e=>e.a===n.id).map(e=>({n:nodeById(e.b), e}));
 
 function reaches(from, to) { // есть ли путь from -> to
@@ -91,7 +101,8 @@ function applyEvents() {
     if (ev.type!=='crash' || G.time<ev.from || G.time>=ev.to) return;
     const st = G.evState[i];
     if (st.hit===null) {
-      const c = G.nodes.filter(n=>n.type===ev.target && alive(n));
+      const types = ev.target==='db' ? STORES : [ev.target];
+      const c = G.nodes.filter(n=>types.includes(n.type) && alive(n));
       st.hit = c.length ? c[0].id : -1;
       if (st.hit>=0) nodeById(st.hit).downUntil = ev.to;
     }
@@ -109,8 +120,10 @@ function route(targets, s, a, M) {
 
 function proc(n, dt, M) {
   const def = NT[n.type], s = n.in.s, a = n.in.a;
+  if (n.type==='replica') { M.err += s.w + a.w; s.w = a.w = s.lw = a.lw = 0; } // реплика не принимает записи
   const wc = n.type==='db' ? 2 : 1;
   const units = s.r + a.r + (s.w + a.w)*wc;
+  n.units = units;
   const cap = capOf(n);
   n.util = cap>0 ? units/cap : (units>0 ? 9 : 0);
   const acc = units<=0 ? 1 : Math.min(1, cap/units);
@@ -121,25 +134,33 @@ function proc(n, dt, M) {
   const all = kidsOf(n);
   switch (n.type) {
     case 'lb': route(all, S, A, M); break;
-    case 'cdn': case 'cache': {
+    case 'cdn': {
       const h = def.hit;
       M.comp.r += S.r*h; M.comp.lr += S.lr*h;
-      const miss = { r:S.r*(1-h), w:S.w, lr:S.lr*(1-h), lw:S.lw };
-      const dbs = all.filter(k=>k.n.type==='db');
-      route(n.type==='cache' && dbs.length ? dbs : all, miss, A, M);
+      route(all, { r:S.r*(1-h), w:S.w, lr:S.lr*(1-h), lw:S.lw }, A, M);
       break; }
-    case 'app': {
-      const caches=all.filter(k=>k.n.type==='cache'), dbs=all.filter(k=>k.n.type==='db'), qs=all.filter(k=>k.n.type==='queue');
-      if (!caches.length && !dbs.length && !qs.length) {
+    case 'cache': case 'redis': {
+      const h = def.hit;
+      M.comp.r += S.r*h; M.comp.lr += S.lr*h;
+      // промахи читаются из реплик/БД, записи идут только в основное хранилище
+      const readDb = all.filter(k=>k.n.type==='replica' || STORES.includes(k.n.type));
+      route(readDb, { r:S.r*(1-h), w:0, lr:S.lr*(1-h), lw:0 }, B(), M);
+      route(all.filter(k=>STORES.includes(k.n.type)), { r:0, w:S.w, lr:0, lw:S.lw }, A, M);
+      break; }
+    case 'app': case 'lambda': {
+      const caches=all.filter(k=>CACHES.includes(k.n.type)), stores=all.filter(k=>STORES.includes(k.n.type)),
+            reps=all.filter(k=>k.n.type==='replica'), qs=all.filter(k=>QUEUES.includes(k.n.type));
+      const readDb = reps.concat(stores);
+      if (!caches.length && !readDb.length && !qs.length) {
         if (all.length) route(all, S, A, M);
         else if (!G.level.stateful) addTo(M.comp, S);
         else M.err += tot(S)+tot(A);
         break;
       }
-      route(caches.length?caches:dbs.length?dbs:qs, { r:S.r, w:0, lr:S.lr, lw:0 }, B(), M);
-      route(qs.length?qs:dbs.length?dbs:caches, { r:0, w:S.w, lr:0, lw:S.lw }, B(), M);
+      route(caches.length?caches:readDb.length?readDb:qs, { r:S.r, w:0, lr:S.lr, lw:0 }, B(), M);
+      route(qs.length?qs:stores.length?stores:caches.length?caches:reps, { r:0, w:S.w, lr:0, lw:S.lw }, B(), M);
       break; }
-    case 'queue': {
+    case 'queue': case 'kafka': {
       addTo(M.comp, { r:0, w:S.w, lr:0, lw:S.lw });
       M.err += S.r;
       const workers = all.filter(k=>k.n.type==='worker');
@@ -151,8 +172,8 @@ function proc(n, dt, M) {
       if (n.backlog>def.buf) { M.err += (n.backlog-def.buf)/dt; n.backlog=def.buf; }
       if (drain>0) route(workers, B(), { r:0, w:drain, lr:0, lw:0 }, M);
       break; }
-    case 'worker': route(all.filter(k=>k.n.type==='db').length?all.filter(k=>k.n.type==='db'):all, B(), A, M); break;
-    case 'db': addTo(M.comp, S); break;
+    case 'worker': { const st = all.filter(k=>STORES.includes(k.n.type)); route(st.length?st:all, B(), A, M); break; }
+    case 'db': case 'nosql': case 'replica': addTo(M.comp, S); break;
   }
 }
 

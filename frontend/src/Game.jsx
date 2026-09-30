@@ -61,12 +61,12 @@ export default function Game({ mode, levelIdx, levels, name, onNameChange, onExi
     resize()
     const ro = new ResizeObserver(resize); ro.observe(stageRef.current)
 
-    let last = performance.now(), acc = 0, hudT = 0, raf, ended = false
+    let last = performance.now(), acc = 0, hudT = 0, raf
     const loop = now => {
       const G = sim.G
       acc += Math.min(0.25, (now - last) / 1000); last = now
       while (acc >= 0.1) { acc -= 0.1; sim.step(G.running ? 0.1 * U.speed : 0.0001) }
-      if (G.done && !ended) { ended = true; const d = G.done; G.done = null; onDone(d) }
+      if (G.done) { const d = G.done; G.done = null; onDone(d) }
       draw(ctx, cv)
       if (now - hudT > 100) {
         hudT = now
@@ -231,6 +231,10 @@ export default function Game({ mode, levelIdx, levels, name, onNameChange, onExi
         <button onClick={reset}>↺</button>
       </div>
 
+      {isFinite(lvl.dur) && (
+        <div className="progress"><div style={{ width: Math.min(100, (hud?.time || 0) / lvl.dur * 100) + '%' }} /></div>
+      )}
+
       <div className="stage" ref={stageRef}>
         <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
         <div className="goals">
@@ -251,7 +255,7 @@ export default function Game({ mode, levelIdx, levels, name, onNameChange, onExi
 
       {result && <Result d={result} goal={goal} isLast={levelIdx >= levels.length - 1} mode={mode}
         name={name} onNameChange={onNameChange}
-        onRetry={onRetry} onExit={onExit} onNext={() => onNext(levelIdx + 1)} />}
+        onKeep={reset} onRetry={onRetry} onExit={onExit} onNext={() => onNext(levelIdx + 1)} />}
     </div>
   )
 }
@@ -262,16 +266,17 @@ function Inspector({ sel, edge, refresh, onDelete }) {
       <div className="row"><button onClick={onDelete}>🗑 Удалить связь</button></div></div>
   )
   const d = NT[sel.type]
+  const lambda = sel.type === 'lambda'
   const price = t => Math.round(d.cost * TIER_COST[t])
   return (
     <div className="insp">
       <h3>{d.icon} {d.name}</h3>
       <p>{d.desc}</p>
       {sel.type !== 'src' && <>
-        <p>Уровень: {sel.tier + 1}/3 · мощность {Math.round(d.cap * TIER_CAP[sel.tier])} · ${price(sel.tier)}/ч</p>
+        <p>Уровень: {sel.tier + 1}/3 · мощность {Math.round(d.cap * TIER_CAP[sel.tier])} · {lambda ? `сейчас $${sim.nodeCost(sel).toFixed(1)}/ч (по нагрузке)` : `$${price(sel.tier)}/ч`}</p>
         <div className="row">
           {sel.tier > 0 && <button onClick={() => { sel.tier--; refresh() }}>⬇ Понизить</button>}
-          {sel.tier < 2 && <button onClick={() => { sim.upgrade(sel); refresh() }}>⬆ Улучшить (+${price(sel.tier + 1) - price(sel.tier)}/ч)</button>}
+          {sel.tier < 2 && <button onClick={() => { sim.upgrade(sel); refresh() }}>{lambda ? '⬆ Улучшить (×2 мощность)' : `⬆ Улучшить (+$${price(sel.tier + 1) - price(sel.tier)}/ч)`}</button>}
           <button onClick={onDelete}>🗑 Удалить</button>
         </div>
       </>}
@@ -280,12 +285,14 @@ function Inspector({ sel, edge, refresh, onDelete }) {
   )
 }
 
-function Result({ d, goal, isLast, mode, name, onNameChange, onRetry, onExit, onNext }) {
+function Result({ d, goal, isLast, mode, name, onNameChange, onKeep, onRetry, onExit, onNext }) {
   if (d.survival) return (
     <div className="ov"><div className="card">
       <h2>Система упала</h2>
       <p>Вы продержались <b>{d.secs} c</b>. Результат отправлен в рейтинг под именем «{name.trim() || 'Аноним'}».</p>
-      <p><button className="primary" onClick={onRetry}>Ещё раз</button> <button onClick={onExit}>Меню</button></p>
+      <p><button className="primary" onClick={onKeep}>↻ Ещё раз с моей схемой</button>{' '}
+        <button onClick={onRetry}>С чистого листа</button>{' '}
+        <button onClick={onExit}>Меню</button></p>
     </div></div>
   )
   return (
@@ -296,8 +303,10 @@ function Result({ d, goal, isLast, mode, name, onNameChange, onRetry, onExit, on
         Плохих секунд: <b className={d.badFrac > 0.1 ? 'bad' : 'good'}>{(d.badFrac * 100).toFixed(0)}%</b> (допустимо ≤ 10%)</p>
       <p>{d.pass ? '★★ — стоимость ≤ 80% лимита, ★★★ — ≤ 65% и почти без сбоев.'
         : 'Смотрите, где загорается красным: узкое место — там, где загрузка ≥ 100%.'}</p>
-      <p><button onClick={onRetry}>Повторить</button>{' '}
+      <p>
+        <button className={d.pass ? '' : 'primary'} onClick={onKeep}>↻ Повторить с моей схемой</button>{' '}
         {d.pass && !isLast && <button className="primary" onClick={onNext}>Дальше →</button>}{' '}
+        <button onClick={onRetry}>С чистого листа</button>{' '}
         <button onClick={onExit}>Меню</button></p>
     </div></div>
   )

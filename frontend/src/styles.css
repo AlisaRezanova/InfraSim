@@ -34,3 +34,6 @@ input[type=range] { width:110px; }
 .lv .n { color:var(--dim); width:22px; } .lv .s { margin-left:auto; color:var(--warn); letter-spacing:2px; white-space:nowrap; }
 .lv small { color:var(--dim); display:block; }
 .board { width:100%; border-collapse:collapse; margin:6px 0; } .board td { padding:3px 6px; border-bottom:1px solid var(--line); }
+
+.progress { height:5px; background:#0f141b; border-bottom:1px solid var(--line); }
+.progress > div { height:100%; background:var(--acc); transition:width .1s linear; }
