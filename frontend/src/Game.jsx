@@ -34,17 +34,17 @@ function rr(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath()
 }
 
-export default function Game({ mode, levelIdx, levels, name, onNameChange, onExit, onNext, onRetry }) {
+export default function Game({ mode, levelIdx, workload, levels, name, onNameChange, defaultSpeed = 1, onExit, onNext, onRetry }) {
   // Игра создаётся синхронно, до первого рендера: канвас должен смонтироваться сразу.
-  useState(() => { sim.newGame(mode, levelIdx, mode === 'level' ? levels[levelIdx] : null) })
+  useState(() => { sim.newGame(mode, levelIdx, mode === 'level' ? levels[levelIdx] : mode === 'sandbox' ? workload : null) })
   const canvasRef = useRef(null), stageRef = useRef(null)
-  const ui = useRef({ sel: null, selEdge: null, conn: null, drag: null, mouse: { x: 0, y: 0 }, speed: 1, view: { sc: 1, ox: 0, oy: 0 } })
+  const ui = useRef({ sel: null, selEdge: null, conn: null, drag: null, mouse: { x: 0, y: 0 }, speed: defaultSpeed, view: { sc: 1, ox: 0, oy: 0 } })
   const [hud, setHud] = useState(null)
   const [, force] = useState(0)
   const [result, setResult] = useState(null)
   const [toast, setToast] = useState('')
-  const [speed, setSpeed] = useState(1)
-  const [sandbox, setSandbox] = useState({ rps: 500, ratio: 80 })
+  const [speed, setSpeed] = useState(defaultSpeed)
+  const [sandbox, setSandbox] = useState({ rps: workload?.rps ?? 500, ratio: Math.round((workload?.ratio ?? 0.8) * 100) })
   const toastT = useRef(null)
   const refresh = () => force(n => n + 1)
   const say = t => { setToast(t); clearTimeout(toastT.current); toastT.current = setTimeout(() => setToast(''), 1600) }
@@ -76,8 +76,11 @@ export default function Game({ mode, levelIdx, levels, name, onNameChange, onExi
     }
     const onDone = d => {
       setResult(d)
-      if (d.survival) { api.saveSurvival(name.trim() || 'Аноним', d.secs).catch(() => {}) }
-      else if (d.pass) { api.saveProgress(levelIdx, d.stars).catch(() => {}) }
+      api.saveResult({
+        mode: d.survival ? 'survival' : 'level', level_idx: d.survival ? null : levelIdx, name: name.trim() || 'Аноним',
+        passed: !!d.pass, stars: d.stars || 0, avg_cost: d.avg || 0, secs: d.secs || 0, p95: d.p95,
+        max_rps: d.maxRps, hot_best: d.hotBest, over_best: d.overBest,
+      }).then(reward => setResult(r => (r === d ? { ...d, reward } : r))).catch(() => {})
     }
     const kd = e => {
       if (e.code === 'Space') { e.preventDefault(); toggleRun() }
@@ -290,6 +293,7 @@ function Result({ d, goal, isLast, mode, name, onNameChange, onKeep, onRetry, on
     <div className="ov"><div className="card">
       <h2>Система упала</h2>
       <p>Вы продержались <b>{d.secs} c</b>. Результат отправлен в рейтинг под именем «{name.trim() || 'Аноним'}».</p>
+      <Reward r={d.reward} />
       <p><button className="primary" onClick={onKeep}>↻ Ещё раз с моей схемой</button>{' '}
         <button onClick={onRetry}>С чистого листа</button>{' '}
         <button onClick={onExit}>Меню</button></p>
@@ -300,7 +304,9 @@ function Result({ d, goal, isLast, mode, name, onNameChange, onKeep, onRetry, on
       <h2>{d.pass ? 'Уровень пройден!' : 'Не получилось'}</h2>
       <p style={{ fontSize: 22, color: 'var(--warn)', margin: 0 }}>{stars(d.stars)}</p>
       <p>Средняя стоимость: <b className={d.avg > goal.cost ? 'bad' : 'good'}>${d.avg.toFixed(0)}/ч</b> (лимит ${goal.cost})<br />
-        Плохих секунд: <b className={d.badFrac > 0.1 ? 'bad' : 'good'}>{(d.badFrac * 100).toFixed(0)}%</b> (допустимо ≤ 10%)</p>
+        Плохих секунд: <b className={d.badFrac > 0.1 ? 'bad' : 'good'}>{(d.badFrac * 100).toFixed(0)}%</b> (допустимо ≤ 10%)<br />
+        Задержка p95: <b>{Math.round(d.p95)} мс</b> · пик пропускной способности: <b>{Math.round(d.maxRps)} запр/с</b></p>
+      <Reward r={d.reward} />
       <p>{d.pass ? '★★ — стоимость ≤ 80% лимита, ★★★ — ≤ 65% и почти без сбоев.'
         : 'Смотрите, где загорается красным: узкое место — там, где загрузка ≥ 100%.'}</p>
       <p>
@@ -309,5 +315,15 @@ function Result({ d, goal, isLast, mode, name, onNameChange, onKeep, onRetry, on
         <button onClick={onRetry}>С чистого листа</button>{' '}
         <button onClick={onExit}>Меню</button></p>
     </div></div>
+  )
+}
+
+function Reward({ r }) {
+  if (!r) return null
+  return (
+    <p>
+      {r.xp_gained > 0 && <b className="good">+{r.xp_gained} XP · уровень {r.level}</b>}
+      {r.achievements.map(a => <span key={a.code}><br />🏆 <b>{a.title}</b> — {a.desc}</span>)}
+    </p>
   )
 }

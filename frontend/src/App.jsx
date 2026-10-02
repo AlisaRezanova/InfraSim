@@ -1,66 +1,74 @@
 import { useEffect, useState } from 'react'
 import * as api from './api.js'
+import { load, save } from './settings.js'
 import Game from './Game.jsx'
+import Play from './pages/Play.jsx'
+import Sandbox from './pages/Sandbox.jsx'
+import Learn from './pages/Learn.jsx'
+import Progress from './pages/Progress.jsx'
+import Settings from './pages/Settings.jsx'
 
-const stars = n => '★'.repeat(n) + '☆'.repeat(3 - n)
+const TABS = [
+  ['play', '▶', 'Играть'],
+  ['sandbox', '🧪', 'Песочница'],
+  ['learn', '📖', 'Учёба'],
+  ['progress', '🏆', 'Прогресс'],
+  ['settings', '⚙️', 'Настройки'],
+]
 
 export default function App() {
+  const [tab, setTab] = useState('play')
   const [levels, setLevels] = useState(null)
+  const [workloads, setWorkloads] = useState([])
   const [progress, setProgress] = useState({})
   const [board, setBoard] = useState([])
+  const [stats, setStats] = useState(null)
   const [error, setError] = useState(null)
-  const [play, setPlay] = useState(null) // { mode, idx }
-  const [name, setName] = useState(() => { try { return localStorage.getItem('infrasim_name') || '' } catch { return '' } })
+  const [play, setPlay] = useState(null) // { mode, idx, workload }
+  const [name, setName] = useState(() => load('name', ''))
+  const [speed, setSpeed] = useState(() => +load('speed', 1))
 
-  const refresh = () => Promise.all([api.getLevels(), api.getProgress(), api.getLeaderboard()])
-    .then(([l, p, b]) => { setLevels(l); setProgress(p); setBoard(b); setError(null) })
+  const refresh = () => Promise.all([api.getLevels(), api.getProgress(), api.getLeaderboard(), api.getWorkloads(), api.getStats()])
+    .then(([l, p, b, w, s]) => { setLevels(l); setProgress(p); setBoard(b); setWorkloads(w); setStats(s); setError(null) })
     .catch(e => setError(String(e.message || e)))
 
   useEffect(() => { refresh() }, [])
 
-  const changeName = v => { setName(v); try { localStorage.setItem('infrasim_name', v) } catch { /* ignore */ } }
+  const changeName = v => { setName(v); save('name', v) }
+  const changeSpeed = v => { setSpeed(v); save('speed', v) }
+  const start = (mode, idx = 0, workload = null) => setPlay({ mode, idx, workload })
 
   if (play && levels) {
-    return <Game key={play.mode + play.idx + (play.n || 0)} mode={play.mode} levelIdx={play.idx}
-      levels={levels} name={name} onNameChange={changeName}
+    return <Game key={play.mode + play.idx + (play.workload?.id || '') + (play.n || 0)}
+      mode={play.mode} levelIdx={play.idx} workload={play.workload}
+      levels={levels} name={name} onNameChange={changeName} defaultSpeed={speed}
       onExit={() => { setPlay(null); refresh() }}
       onNext={idx => setPlay({ mode: 'level', idx })}
       onRetry={() => setPlay(p => ({ ...p, n: (p.n || 0) + 1 }))} />
   }
 
   return (
-    <div className="ov">
-      <div className="card">
-        <h2>InfraSim</h2>
-        <p>Проектируйте инфраструктуру: перетаскивайте компоненты, соединяйте их и смотрите, как система живёт под нагрузкой.
-          Следите за <b>задержкой</b>, <b>стоимостью</b> и <b>ошибками</b>.</p>
+    <div className="app">
+      <main className="page">
         {error && <p className="bad">Не удалось связаться с сервером: {error}. Запущен ли backend?</p>}
+        {!levels && !error && <p className="sub">Загрузка…</p>}
         {levels && <>
-          <h3>Кампания</h3>
-          {levels.map((l, i) => (
-            <button key={i} className="lv" onClick={() => setPlay({ mode: 'level', idx: i })}>
-              <span className="n">{i + 1}</span>
-              <span>{l.name}<small>{l.story.slice(0, 70)}…</small></span>
-              <span className="s">{stars(progress[i] || 0)}</span>
-            </button>
-          ))}
-          <h3>Режимы</h3>
-          <p style={{ margin: '4px 0' }}>Ваше имя для рейтинга:{' '}
-            <input type="text" maxLength={24} value={name} onChange={e => changeName(e.target.value)} placeholder="Аноним" /></p>
-          <button className="lv" onClick={() => setPlay({ mode: 'survival' })}>
-            <span>♾ Выживание<small>Бесконечная нагрузка и инциденты — кто продержится дольше</small></span>
-          </button>
-          <button className="lv" onClick={() => setPlay({ mode: 'sandbox' })}>
-            <span>🧪 Песочница<small>Свободное строительство, нагрузка вручную</small></span>
-          </button>
-          <h3>Рейтинг выживания</h3>
-          {board.length === 0 ? <p>Пока никого. Станьте первым!</p> :
-            <table className="board"><tbody>
-              {board.map((r, i) => <tr key={i}><td>{i + 1}</td><td>{r.name}</td><td style={{ textAlign: 'right' }}>{r.secs} c</td></tr>)}
-            </tbody></table>}
+          {tab === 'play' && <Play levels={levels} progress={progress} board={board} onPlay={start} />}
+          {tab === 'sandbox' && <Sandbox workloads={workloads} onPlay={start} />}
+          {tab === 'learn' && <Learn />}
+          {tab === 'progress' && <Progress stats={stats} name={name} />}
+          {tab === 'settings' && <Settings name={name} onNameChange={changeName} speed={speed}
+            onSpeedChange={changeSpeed} onReset={refresh} />}
         </>}
-        {!levels && !error && <p>Загрузка…</p>}
-      </div>
+        {!levels && tab === 'learn' && <Learn />}
+      </main>
+      <nav className="tabbar">
+        {TABS.map(([id, icon, label]) => (
+          <button key={id} className={tab === id ? 'sel' : ''} onClick={() => setTab(id)}>
+            <span>{icon}</span>{label}
+          </button>
+        ))}
+      </nav>
     </div>
   )
 }

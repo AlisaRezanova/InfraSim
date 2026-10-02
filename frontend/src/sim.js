@@ -21,6 +21,8 @@ const ALL = ['lb','cdn','app','lambda','cache','redis','db','replica','nosql','q
 // Роли компонентов: по ним работает маршрутизация.
 const CACHES = ['cache','redis'], STORES = ['db','nosql'], QUEUES = ['queue','kafka'];
 const LAMBDA_PER_RPS = 0.03;
+// Пороги для ачивок «Всё нормально» и «Переусложнил».
+const HOT_UTIL = 0.9, OVER_COST = 300, OVER_RPS = 200;
 
 
 export let G = null;
@@ -34,11 +36,28 @@ function rng(seed) { let s=seed>>>0; return () => (s = (s*1664525+1013904223)>>>
 export function newGame(mode, levelIdx, levelDef) {
   const lvl = mode==='level' ? levelDef : mode==='survival'
     ? { name:'Выживание', story:'Нагрузка растёт, инциденты учащаются. Продержитесь как можно дольше.', dur:Infinity, rps:300, ratio:0.85, stateful:true, allowed:ALL, goal:null, events:genSurvival() }
-    : { name:'Песочница', story:'Стройте что угодно. Нагрузку задают ползунки сверху.', dur:Infinity, rps:500, ratio:0.8, stateful:true, allowed:ALL, goal:null, events:[] };
+    : { name:levelDef?.name ?? 'Песочница', story:levelDef?.story ?? 'Стройте что угодно. Нагрузку задают ползунки сверху.', dur:Infinity,
+        rps:levelDef?.rps ?? 500, ratio:levelDef?.ratio ?? 0.8, stateful:levelDef?.stateful ?? true, allowed:ALL, goal:null, events:levelDef?.events ?? [] };
   G = { mode, levelIdx, level:lvl, nodes:[{id:0,type:'src',x:80,y:280,tier:0,downUntil:0,in:null,util:0}], edges:[], nextId:1,
-        time:0, running:false, done:null, costInt:0, bad:0, failT:0, sandRps:500, sandRatio:0.8,
-        m:{rps:0,err:0,lat:0,cost:0}, evState:lvl.events.map(()=>({hit:null})) };
+        time:0, running:false, done:null, costInt:0, bad:0, failT:0, sandRps:lvl.rps, sandRatio:lvl.ratio,
+        m:{rps:0,err:0,lat:0,cost:0}, evState:lvl.events.map(()=>({hit:null})), ...freshStats() };
   return G;
+}
+// Метрики прохождения: по ним считаются p95, рекорды и ачивки.
+function freshStats() { return { lats:[], maxRps:0, hot:0, hotBest:0, over:0, overBest:0 }; }
+function recordStats(dt) {
+  const m = G.m;
+  G.maxRps = Math.max(G.maxRps, m.rps*(1-m.err));
+  if (m.lat > 0) G.lats.push(m.lat);
+  const hot = m.err <= 0.05 && G.nodes.some(n => n.type!=='src' && alive(n) && n.util >= HOT_UTIL);
+  G.hot = hot ? G.hot+dt : 0; G.hotBest = Math.max(G.hotBest, G.hot);
+  const over = m.cost >= OVER_COST && m.rps < OVER_RPS;
+  G.over = over ? G.over+dt : 0; G.overBest = Math.max(G.overBest, G.over);
+}
+function p95() {
+  if (!G.lats.length) return 0;
+  const a = [...G.lats].sort((x,y)=>x-y);
+  return a[Math.floor(0.95*(a.length-1))];
 }
 function genSurvival() {
   const r = rng(12345), ev = [];
@@ -195,6 +214,7 @@ export function step(dt) {
   if (!G.running) return;
   const g = G.level.goal, m = G.m;
   G.time += dt; G.costInt += m.cost*dt;
+  recordStats(dt);
   if (g) {
     if (m.err > g.err || m.lat > g.lat) G.bad += dt;
     if (G.time >= G.level.dur) finish();
@@ -205,17 +225,18 @@ export function step(dt) {
 }
 function finish() {
   G.running = false;
-  if (G.mode==='survival') { G.done = { survival:true, secs:Math.floor(G.time) }; return; }
+  const stats = { p95:p95(), maxRps:G.maxRps, hotBest:G.hotBest, overBest:G.overBest };
+  if (G.mode==='survival') { G.done = { survival:true, secs:Math.floor(G.time), ...stats }; return; }
   const g=G.level.goal, avg=G.costInt/G.level.dur, badFrac=G.bad/G.level.dur;
   const pass = badFrac<=0.1 && avg<=g.cost;
   let stars = 0;
   if (pass) { stars=1; if (avg<=g.cost*0.8) stars=2; if (avg<=g.cost*0.65 && badFrac<=0.02) stars=3; }
-  G.done = { pass, stars, avg, badFrac };
+  G.done = { pass, stars, avg, badFrac, ...stats };
 }
 
 
 export function resetRun() {
-  G.time = 0; G.running = false; G.costInt = 0; G.bad = 0; G.failT = 0; G.done = null;
+  G.time = 0; G.running = false; G.costInt = 0; G.bad = 0; G.failT = 0; G.done = null; Object.assign(G, freshStats());
   G.nodes.forEach(n => { n.downUntil = 0; n.backlog = 0; });
   G.evState = G.level.events.map(() => ({ hit: null }));
 }

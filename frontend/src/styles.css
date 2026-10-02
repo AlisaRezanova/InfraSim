@@ -37,3 +37,34 @@ input[type=range] { width:110px; }
 
 .progress { height:5px; background:#0f141b; border-bottom:1px solid var(--line); }
 .progress > div { height:100%; background:var(--acc); transition:width .1s linear; }
+
+/* ---- вкладки и страницы ---- */
+.app { display:flex; flex-direction:column; height:100%; }
+.page { flex:1; overflow:auto; padding:22px 16px 28px; width:100%; max-width:680px; margin:0 auto; }
+.page h1 { margin:0 0 4px; font-size:30px; }
+.page h3 { margin:22px 0 6px; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+.sub { color:var(--dim); line-height:1.45; margin:4px 0 12px; }
+.text { color:var(--text); line-height:1.55; }
+.page ul.text { padding-left:20px; }
+.tabbar { display:flex; background:var(--panel); border-top:1px solid var(--line); }
+.tabbar button { flex:1; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:11px; padding:8px 2px; border:0; border-radius:0; background:none; color:var(--dim); }
+.tabbar button span { font-size:19px; }
+.tabbar button.sel { color:var(--acc); }
+.hero { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px 18px; margin:12px 0; }
+.hero small { color:var(--acc); font-weight:600; }
+.hero h2 { margin:4px 0; } .hero p { color:var(--dim); line-height:1.45; margin:6px 0 10px; }
+.hero .lvl { color:var(--acc); }
+.hero button.primary { background:var(--ok); border-color:var(--ok); }
+.bar { height:6px; background:#0f141b; border-radius:3px; margin-top:8px; overflow:hidden; }
+.bar > div { height:100%; background:var(--acc); }
+.tiles { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:10px 0; }
+.tile { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 6px; text-align:center; }
+.tile b { display:block; font-size:17px; } .tile small { color:var(--dim); font-size:11px; }
+.seg { display:flex; gap:6px; margin:8px 0; } .seg button { flex:1; }
+.search { width:100%; margin:6px 0; }
+.ic { width:34px; text-align:center; font-size:20px; }
+.ach { display:flex; gap:12px; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin:6px 0; opacity:.6; }
+.ach.on { opacity:1; border-color:var(--ok); }
+.ach small { display:block; color:var(--dim); margin-top:2px; line-height:1.35; }
+.ach .ring { flex:0 0 28px; height:28px; border:2px solid var(--line); border-radius:50%; display:flex; align-items:center; justify-content:center; color:var(--ok); }
+.ach.on .ring { border-color:var(--ok); }
