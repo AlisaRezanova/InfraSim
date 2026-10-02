@@ -5,6 +5,14 @@ import * as api from './api.js'
 const { NT, TIER_CAP, TIER_COST } = sim
 const VW = 1000, VH = 560, NW = 96, NH = 58
 const col = u => (u >= 1 ? '#ff5d5d' : u >= 0.75 ? '#f0b83a' : '#4cd07d')
+const SPLIT = sim.ZONE_SPLIT_Y ?? 280
+const MULTI_OK = sim.MULTI_OK || []
+const MAXCONN = sim.MAXCONN || { min: 20, max: 400, step: 20, def: 120 }
+const zoneName = z => (z ? 'Б' : 'A')
+const zoneIdx = n => (sim.zoneOf ? sim.zoneOf(n) : (n.y < SPLIT ? 0 : 1))
+const zoneDown = z => !!(sim.zoneDown && sim.zoneDown(z))
+const connsUsed = n => (sim.connsUsed ? sim.connsUsed(n) : 0)
+const maxConnOf = n => n.maxConn ?? MAXCONN.def
 const stars = n => '★'.repeat(n) + '☆'.repeat(3 - n)
 
 const inNode = (n, p) => Math.abs(p.x - n.x) <= NW / 2 && Math.abs(p.y - n.y) <= NH / 2
@@ -97,6 +105,23 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
     const G = sim.G, U = ui.current, { sc, ox, oy, dpr = 1 } = U.view
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height)
     ctx.setTransform(sc * dpr, 0, 0, sc * dpr, ox * dpr, oy * dpr)
+    const tnow = performance.now() / 1000
+    for (let z = 0; z < 2; z++) {
+      const y0 = z ? SPLIT : 0, h = z ? VH - SPLIT : SPLIT, down = zoneDown(z)
+      ctx.fillStyle = down ? '#ff5d5d22' : z ? '#b48cff0d' : '#4da3ff0d'; ctx.fillRect(0, y0, VW, h)
+      if (down) {
+        ctx.fillStyle = `rgba(255,93,93,${0.07 + 0.07 * Math.sin(tnow * 5)})`; ctx.fillRect(0, y0, VW, h)
+        ctx.save(); ctx.beginPath(); ctx.rect(0, y0, VW, h); ctx.clip()
+        ctx.strokeStyle = '#ff5d5d30'; ctx.lineWidth = 2; ctx.beginPath()
+        for (let k = -h; k < VW; k += 28) { ctx.moveTo(k, y0 + h); ctx.lineTo(k + h, y0) }
+        ctx.stroke(); ctx.restore()
+      }
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = 'bold 12px system-ui'
+      ctx.fillStyle = down ? '#ff8a8a' : '#8b97a8'
+      ctx.fillText(down ? `Зона ${zoneName(z)} — отказ` : `Зона ${zoneName(z)}`, 10, y0 + (z ? 8 : 40))
+    }
+    ctx.strokeStyle = '#ffffff22'; ctx.lineWidth = 1; ctx.setLineDash([8, 6]); ctx.beginPath()
+    ctx.moveTo(0, SPLIT); ctx.lineTo(VW, SPLIT); ctx.stroke(); ctx.setLineDash([])
     ctx.fillStyle = '#ffffff10'
     for (let x = 20; x < VW; x += 40) for (let y = 20; y < VH; y += 40) ctx.fillRect(x, y, 2, 2)
     const now = performance.now() / 1000
@@ -127,6 +152,12 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
       ctx.lineWidth = n === U.sel ? 3 : 2
       ctx.strokeStyle = n === U.sel ? '#4da3ff' : !up ? '#666' : n.type === 'src' ? '#4da3ff' : col(n.util)
       ctx.stroke()
+      if (n.multi && MULTI_OK.includes(n.type)) {
+        ctx.strokeStyle = '#b48cff'; ctx.lineWidth = 1.5; rr(ctx, x - 4, y - 4, NW + 8, NH + 8, 13); ctx.stroke()
+        ctx.fillStyle = '#b48cff'; rr(ctx, n.x - 24, y + NH + 1, 48, 14, 5); ctx.fill()
+        ctx.fillStyle = '#0f141b'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText('2 зоны', n.x, y + NH + 8)
+      }
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
       ctx.font = '22px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(up ? d.icon : '💥', n.x, n.y - 8)
       ctx.font = '11px system-ui'; ctx.fillStyle = '#b9c4d2'; ctx.fillText(d.name, n.x, n.y + 13)
@@ -146,9 +177,10 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
     })
     const act = G.level.events.filter(ev => G.running && G.time >= ev.from && G.time < ev.to)
     if (act.length) {
-      ctx.textAlign = 'center'; ctx.font = 'bold 15px system-ui'; ctx.fillStyle = '#ff8a5d'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 15px system-ui'; ctx.fillStyle = '#ff8a5d'
       ctx.fillText('⚠ ' + act.map(ev => ev.type === 'spike' ? 'ПИК НАГРУЗКИ ×' + ev.mult.toFixed(1)
-        : ev.type === 'crash' ? 'ОТКАЗ: ' + NT[ev.target].name : 'ШКВАЛ ЗАПИСЕЙ').join(' · '), VW / 2, 24)
+        : ev.type === 'crash' ? 'ОТКАЗ: ' + NT[ev.target].name
+        : ev.type === 'zone' ? 'ОТКАЗ ЗОНЫ ' + zoneName(ev.zone).toUpperCase() : 'ШКВАЛ ЗАПИСЕЙ').join(' · '), VW / 2, 24)
     }
   }
 
@@ -197,6 +229,16 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
     refresh()
   }
   const addFromPalette = type => { const p = freeSpot(), n = sim.addNode(type, p.x, p.y); ui.current.sel = n; ui.current.selEdge = null; refresh() }
+  const duplicate = () => {
+    const U = ui.current, o = U.sel
+    if (!o || o.type === 'src') return
+    const p = freeSpot(), n = sim.addNode(o.type, p.x, p.y)
+    n.tier = o.tier
+    if (o.multi) n.multi = true
+    if (o.cross !== undefined) n.cross = o.cross
+    if (o.maxConn !== undefined) n.maxConn = o.maxConn
+    U.sel = n; U.selEdge = null; refresh()
+  }
   const setSpd = v => { ui.current.speed = v; setSpeed(v) }
   const reset = () => { sim.resetRun(); setResult(null) }
   const setSand = (k, v) => {
@@ -247,7 +289,8 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
         </div>
         {toast && <div className="toast">{toast}</div>}
         {(sel || U.selEdge) && <Inspector sel={sel} edge={U.selEdge} refresh={refresh}
-          onDelete={removeSelected} />}
+          onDelete={removeSelected} onDuplicate={duplicate} />}
+        <Hints lvl={lvl} mode={mode} />
       </div>
 
       <div className="palette">
@@ -263,7 +306,7 @@ export default function Game({ mode, levelIdx, workload, levels, name, onNameCha
   )
 }
 
-function Inspector({ sel, edge, refresh, onDelete }) {
+function Inspector({ sel, edge, refresh, onDelete, onDuplicate }) {
   if (edge) return (
     <div className="insp"><h3>Связь</h3><p>Поток: {Math.round(edge.rate)} запр/с</p>
       <div className="row"><button onClick={onDelete}>🗑 Удалить связь</button></div></div>
@@ -281,11 +324,56 @@ function Inspector({ sel, edge, refresh, onDelete }) {
           {sel.tier > 0 && <button onClick={() => { sel.tier--; refresh() }}>⬇ Понизить</button>}
           {sel.tier < 2 && <button onClick={() => { sim.upgrade(sel); refresh() }}>{lambda ? '⬆ Улучшить (×2 мощность)' : `⬆ Улучшить (+$${price(sel.tier + 1) - price(sel.tier)}/ч)`}</button>}
           <button onClick={onDelete}>🗑 Удалить</button>
+          <button onClick={onDuplicate}>⧉ Дублировать</button>
         </div>
+        <p>Оценка стоимости: <b>${Number(sim.nodeCost(sel)).toFixed(1)}/ч</b></p>
+        <p>Расположение: <b>{sel.multi && MULTI_OK.includes(sel.type) ? 'обе зоны' : 'Зона ' + zoneName(zoneIdx(sel))}</b>
+          <br /><small>Перетащите блок вверх или вниз, чтобы переместить его между зонами.</small></p>
+        {MULTI_OK.includes(sel.type) && <div className="opt">
+          <div className="optrow"><span>Мульти-зона</span>
+            <button className={'tog' + (sel.multi ? ' on' : '')} onClick={() => { if (sim.setMulti) sim.setMulti(sel, !sel.multi); else sel.multi = !sel.multi; refresh() }}>{sel.multi ? 'Вкл' : 'Выкл'}</button></div>
+          <small>Переживает отказ зоны, но в 2 раза дороже.</small>
+        </div>}
+        {sel.type === 'lb' && <div className="opt">
+          <div className="optrow"><span>Кросс-зона</span>
+            <button className={'tog' + (sel.cross !== false ? ' on' : '')} onClick={() => { sel.cross = sel.cross === false; refresh() }}>{sel.cross !== false ? 'Вкл' : 'Выкл'}</button></div>
+          <small>Включено: балансировка по обеим зонам. Выключено: только в своей зоне — быстрее, но без отказоустойчивости.</small>
+        </div>}
+        {(sel.type === 'db' || sel.type === 'nosql') && (() => {
+          const mc = maxConnOf(sel), used = connsUsed(sel)
+          const setMc = v => { sel.maxConn = Math.max(MAXCONN.min, Math.min(MAXCONN.max, v)); refresh() }
+          return <div className="opt">
+            <div className="optrow"><span>Макс. соединений</span>
+              <span className="stepper">
+                <button disabled={mc <= MAXCONN.min} onClick={() => setMc(mc - MAXCONN.step)}>−</button>
+                <b>{mc}</b>
+                <button disabled={mc >= MAXCONN.max} onClick={() => setMc(mc + MAXCONN.step)}>+</button>
+              </span></div>
+            <div className={'conns' + (used > mc ? ' bad' : '')}>занято {used} / {mc}</div>
+            <small>Жёсткий потолок: каждый сервер держит пул соединений.</small>
+          </div>
+        })()}
       </>}
       <p style={{ marginBottom: 0 }}>Потяните за кружок справа от блока, чтобы соединить его с другим.</p>
     </div>
   )
+}
+
+function Hints({ lvl, mode }) {
+  const G = sim.G, out = []
+  const nodes = G.nodes.filter(n => n.type !== 'src')
+  const hasZoneEv = (lvl.events || []).some(ev => ev.type === 'zone')
+  if ((hasZoneEv || mode !== 'level') && nodes.length > 0 && !nodes.some(n => n.multi) &&
+    nodes.every(n => zoneIdx(n) === zoneIdx(nodes[0])))
+    out.push('Все ресурсы в одной зоне — отказ зоны остановит сервис')
+  const hasStore = nodes.some(n => n.type === 'db' || n.type === 'nosql')
+  const allowCache = (lvl.allowed || []).some(t => t === 'cache' || t === 'redis')
+  if (hasStore && allowCache && !nodes.some(n => n.type === 'cache' || n.type === 'redis'))
+    out.push('Нет кэша: каждое чтение идёт в БД')
+  if (nodes.some(n => (n.type === 'db' || n.type === 'nosql') && connsUsed(n) > maxConnOf(n)))
+    out.push('БД: соединений не хватает')
+  if (!out.length) return null
+  return <div className="hints">{out.slice(0, 2).map(t => <div key={t}>⚠ {t}</div>)}</div>
 }
 
 function Result({ d, goal, isLast, mode, name, onNameChange, onKeep, onRetry, onExit, onNext }) {
