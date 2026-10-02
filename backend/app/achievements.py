@@ -13,6 +13,7 @@ ACHIEVEMENTS = [
     dict(code="overengineered", title="Переусложнил", desc="Тратьте от $300/ч, обслуживая меньше 200 запросов/с, хотя бы 20 секунд."),
     dict(code="finops_wizard", title="Волшебник FinOps", desc="Пройдите уровень, уложившись в 60% от лимита стоимости."),
     dict(code="crash_test", title="Краш-тест", desc="Пройдите уровень, где ломаются сервер или база."),
+    dict(code="no_spof", title="Нет единой точки отказа", desc="Пройдите уровень с отказом зоны доступности."),
     dict(code="survivor", title="Выживший", desc="Продержитесь в режиме «Выживание» не меньше 2 минут."),
     dict(code="regular", title="Постоянство", desc="Играйте три дня подряд."),
 ]
@@ -44,6 +45,8 @@ def earned(result: dict, streak: int) -> set[str]:
             got.add("finops_wizard")
         if any(e["type"] == "crash" for e in LEVELS[result["level_idx"]]["events"]):
             got.add("crash_test")
+        if any(e["type"] == "zone" for e in LEVELS[result["level_idx"]]["events"]):
+            got.add("no_spof")
     if (passed or mode == "survival") and result["hot_best"] >= 60:
         got.add("this_is_fine")
     if result["over_best"] >= 20:
